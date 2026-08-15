@@ -90,7 +90,7 @@ The request is sent with `curl.exe` rather than `Invoke-WebRequest` so that the 
 
 ## Additional Resources
 
-- [Richard M. Hicks Consulting Blog](https://www.richardhicks.com/)
+- [Richard M. Hicks Consulting Blog](https://directaccess.richardhicks.com/)
 - [NDES NTLM GitHub Repository](https://github.com/richardhicks/ndesntlm/)
 
 ## License
