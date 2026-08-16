@@ -1,6 +1,6 @@
 <#PSScriptInfo
 
-.VERSION 1.1
+.VERSION 1.2
 
 .GUID c5c64ed4-9898-4369-a5b1-eabb478bcbac
 
@@ -90,9 +90,9 @@
     https://www.richardhicks.com/
 
 .NOTES
-    Version:        1.1
+    Version:        1.2
     Creation Date:  August 15, 2026
-    Last Updated:   August 15, 2026
+    Last Updated:   August 16, 2026
     Author:         Richard Hicks
     Organization:   Richard M. Hicks Consulting, Inc.
     Contact:        rich@richardhicks.com
@@ -139,10 +139,10 @@ Process {
         }
 
         # Build the curl arguments:
-        #   -sI  : silent, headers only (HEAD-style response)
+        #   -sSI : silent (no progress meter) but still show errors on stderr, headers only (HEAD-style response)
         #   -H   : send an unauthenticated NTLM type-1 (negotiate) message to trigger the server's type-2 challenge
         # The base64 blob is a standard, static NTLM type-1 negotiate message
-        $CurlArgs = @('-sI', '-H', 'Authorization: NTLM TlRMTVNTUAABAAAAB4IIAAAAAAAAAAAAAAAAAAAAAAA=', $Target.AbsoluteUri)
+        $CurlArgs = @('-sSI', '-H', 'Authorization: NTLM TlRMTVNTUAABAAAAB4IIAAAAAAAAAAAAAAAAAAAAAAA=', $Target.AbsoluteUri)
 
         If ($SkipCertificateCheck) {
 
@@ -153,9 +153,56 @@ Process {
         }
 
         # Send the request. curl.exe is used rather than Invoke-WebRequest because the response headers,
-        # including the raw NTLM challenge, need to be captured verbatim
+        # including the raw NTLM challenge, need to be captured verbatim. stderr is redirected to a temp file so
+        # curl's diagnostic (e.g. a TLS validation failure) can be captured separately from the response headers.
         Write-Verbose "Sending unauthenticated NTLM type-1 request to $($Target.AbsoluteUri)."
-        $Response = & curl.exe @CurlArgs
+        $StdErrFile = [System.IO.Path]::GetTempFileName()
+
+        Try {
+
+            $Response = & curl.exe @CurlArgs 2>$StdErrFile
+            $ExitCode = $LASTEXITCODE
+
+            # Get-Content -Raw returns $null for an empty file (the normal case when curl succeeds). Guard against
+            # that before trimming, because calling .Trim() on a null value throws
+            $StdErr = Get-Content -Path $StdErrFile -Raw
+
+            If ($StdErr) { $StdErr = $StdErr.Trim() } Else { $StdErr = '' }
+
+        }
+
+        Finally {
+
+            Remove-Item -Path $StdErrFile -ErrorAction SilentlyContinue
+
+        }
+
+        # A non-zero curl exit code means the request never completed (e.g. TLS handshake aborted, host
+        # unreachable). Without this check a failed connection is indistinguishable from a server that simply
+        # did not offer NTLM, producing a false "Information not disclosed" result. Report it as inconclusive.
+        If ($ExitCode -ne 0) {
+
+            If ($ExitCode -eq 60) {
+
+                # curl exit 60: the server's TLS certificate could not be validated (self-signed, name mismatch,
+                # untrusted issuer). The request was never sent, so disclosure cannot be assessed. Re-run with
+                # -SkipCertificateCheck to bypass certificate validation.
+                Write-Warning "$($Target.AbsoluteUri) TLS certificate validation failed (curl exit 60). Re-run with -SkipCertificateCheck. Result inconclusive."
+                $Result.Status = 'TLS certificate validation failed. Re-run with -SkipCertificateCheck. Result inconclusive.'
+
+            }
+
+            Else {
+
+                Write-Warning "$($Target.AbsoluteUri) request failed (curl exit $ExitCode): $StdErr. Result inconclusive."
+                $Result.Status = "Request failed (curl exit $ExitCode): $StdErr. Result inconclusive."
+
+            }
+
+            [PSCustomObject]$Result
+            Continue
+
+        }
 
         # Look for a WWW-Authenticate header that contains an NTLM type-2 payload (the base64 challenge)
         $Match = $Response | Select-String -Pattern '^WWW-Authenticate:\s*NTLM\s+(\S+)\s*$'
@@ -257,10 +304,10 @@ Process {
 }
 
 # SIG # Begin signature block
-# MIIk6wYJKoZIhvcNAQcCoIIk3DCCJNgCAQExDzANBglghkgBZQMEAgEFADB5Bgor
+# MIIk7AYJKoZIhvcNAQcCoIIk3TCCJNkCAQExDzANBglghkgBZQMEAgEFADB5Bgor
 # BgEEAYI3AgEEoGswaTA0BgorBgEEAYI3AgEeMCYCAwEAAAQQH8w7YFlLCE63JNLG
-# KX7zUQIBAAIBAAIBAAIBAAIBADAxMA0GCWCGSAFlAwQCAQUABCAN0tydnxvNCF5l
-# roGuKdQpbk32gH/uGXfJr3y3d7dLBaCCH6YwggWNMIIEdaADAgECAhAOmxiO+dAt
+# KX7zUQIBAAIBAAIBAAIBAAIBADAxMA0GCWCGSAFlAwQCAQUABCDyS0W3aN8PnOAp
+# 0izgD5+CTRsjfX1YNV3rMpMP2vxYKKCCH6YwggWNMIIEdaADAgECAhAOmxiO+dAt
 # 5+/bUOIIQBhaMA0GCSqGSIb3DQEBDAUAMGUxCzAJBgNVBAYTAlVTMRUwEwYDVQQK
 # EwxEaWdpQ2VydCBJbmMxGTAXBgNVBAsTEHd3dy5kaWdpY2VydC5jb20xJDAiBgNV
 # BAMTG0RpZ2lDZXJ0IEFzc3VyZWQgSUQgUm9vdCBDQTAeFw0yMjA4MDEwMDAwMDBa
@@ -429,29 +476,29 @@ Process {
 # cJIFcbojBcxlRcGG0LIhp6GvReQGgMgYxQbV1S3CrWqZzBt1R9xJgKf47CdxVRd/
 # ndUlQ05oxYy2zRWVFjF7mcr4C34Mj3ocCVccAvlKV9jEnstrniLvUxxVZE/rptb7
 # IRE2lskKPIJgbaP5t2nGj/ULLi49xTcBZU8atufk+EMF/cWuiC7POGT75qaL6vdC
-# vHlshtjdNXOCIUjsarfNZzGCBJswggSXAgEBMH0waTELMAkGA1UEBhMCVVMxFzAV
+# vHlshtjdNXOCIUjsarfNZzGCBJwwggSYAgEBMH0waTELMAkGA1UEBhMCVVMxFzAV
 # BgNVBAoTDkRpZ2lDZXJ0LCBJbmMuMUEwPwYDVQQDEzhEaWdpQ2VydCBUcnVzdGVk
 # IEc0IENvZGUgU2lnbmluZyBSU0E0MDk2IFNIQTM4NCAyMDIxIENBMQIQDsYrSCrm
 # UJuvTRscProh/zANBglghkgBZQMEAgEFAKCBhDAYBgorBgEEAYI3AgEMMQowCKAC
 # gAChAoAAMBkGCSqGSIb3DQEJAzEMBgorBgEEAYI3AgEEMBwGCisGAQQBgjcCAQsx
-# DjAMBgorBgEEAYI3AgEVMC8GCSqGSIb3DQEJBDEiBCCUTbTWy5wP+ha1ie/V1q8R
-# DzFOV9eqQWNEn+sRiIc8XDALBgcqhkjOPQIBBQAERjBEAiBwEa/gKkDO6C2F3yP8
-# JNLH5WRQGDzbsgektlj2uLe3+gIgc3znEWKynHuu4ccRAbvmmJWzgobuLsPrT8V3
-# PFbfqjihggMmMIIDIgYJKoZIhvcNAQkGMYIDEzCCAw8CAQEwfTBpMQswCQYDVQQG
-# EwJVUzEXMBUGA1UEChMORGlnaUNlcnQsIEluYy4xQTA/BgNVBAMTOERpZ2lDZXJ0
-# IFRydXN0ZWQgRzQgVGltZVN0YW1waW5nIFJTQTQwOTYgU0hBMjU2IDIwMjUgQ0Ex
-# AhAKgO8YS43xBYLRxHanlXRoMA0GCWCGSAFlAwQCAQUAoGkwGAYJKoZIhvcNAQkD
-# MQsGCSqGSIb3DQEHATAcBgkqhkiG9w0BCQUxDxcNMjYwODE2MDQzMDE3WjAvBgkq
-# hkiG9w0BCQQxIgQg/Ph90Mj3JQc8kB30MyAsCY9mFaOI2Fjta8JKvwmLquAwDQYJ
-# KoZIhvcNAQEBBQAEggIAWIc3ItKxBJPoZXKAwnK12VHyBz0gbekgszGV2TCfmrP9
-# f0G+LctBt8qYP6SqExUUJP6QiksfGOBhWhi45q/MozqrmyMfMV5OPdsgJ1gPHxkp
-# Plm6R7lOjA+g91Lb25L7GuND9phZ0CGBJk3PbyB7wk99nwkhWJF0LIBSwD3sJwFP
-# obp5U8u3LkGir6p4f6k45zngn5JkL+sjzVJ4mdUJeVUZnDJjD/3F+0BuxWyceGk1
-# 9Q1MBIAQtE0Y+PRuTMn9+fdWK4YC8dbos620yossC0Y/+l+aQzM9edAmp72CGGYg
-# p56Eh/kF7l37dlhsKfW5pZ/6O1JR9FY5WQFaGpchh87EhBiZLD93GPokEH5wooEA
-# K0uey4g53hqWaGFdtnTnfg5R4B69vDugu1aQrz+E+cm9gIqISrPXPi5MHB6DGilf
-# FP37kye9/xKdjFJFtO7SC0rhNfqtzF7OxVvYr9TBJ/cjPSOFJoOKNwnBIjQSya0c
-# Z2fvTtGMwyYN7Fo5ogqm1+dEOQ/7R3brQ0U5eEFrOUQQoT+12jbE+SbIyzRGoOVq
-# YATtA5YJLAaWJ1saJJZbwo3HsBXtsZvHM4yaLVg1kA3svO8Kxt1PZqNufqu+0jnN
-# LbqAmMwp8bZ05+sPEpKtrpF7WdzIXrIOzCkMbgXkei6hhw1akuBR3+umlaUDR+4=
+# DjAMBgorBgEEAYI3AgEVMC8GCSqGSIb3DQEJBDEiBCBHoqz6C9wZJD88QA3YJtbw
+# 3Y+F/Dkvbiafrps/eSyMmjALBgcqhkjOPQIBBQAERzBFAiEAysY2cSzrqM//c/+f
+# e1uRnXwsg7f50as8VOKiq+yYnRICICv0wbRgcklpTcvXkzOJRpKe5mB1uK+vF9vG
+# xjcEUk3qoYIDJjCCAyIGCSqGSIb3DQEJBjGCAxMwggMPAgEBMH0waTELMAkGA1UE
+# BhMCVVMxFzAVBgNVBAoTDkRpZ2lDZXJ0LCBJbmMuMUEwPwYDVQQDEzhEaWdpQ2Vy
+# dCBUcnVzdGVkIEc0IFRpbWVTdGFtcGluZyBSU0E0MDk2IFNIQTI1NiAyMDI1IENB
+# MQIQCoDvGEuN8QWC0cR2p5V0aDANBglghkgBZQMEAgEFAKBpMBgGCSqGSIb3DQEJ
+# AzELBgkqhkiG9w0BBwEwHAYJKoZIhvcNAQkFMQ8XDTI2MDgxNjE2MzMyMlowLwYJ
+# KoZIhvcNAQkEMSIEIEKXZErLyWBRTbUceN0shQ6HkR3nQjzhWY+c/eH3XT4IMA0G
+# CSqGSIb3DQEBAQUABIICAF3k67njfB1vvKBj9Xy2EVS1KXSxYCtuxG6ZOklRYmfr
+# 399G4zbVQT4fRwHL00OLdJWv/V8hpgxjRTMY/TRyGfEpay0U1cz37/CXFGcYylsQ
+# C3tIQMKHLtkHvcSNmOB2IkhSRSy/BK4O7kxPsPzB5faGn/sUTYTMcFxTflL8Qqo9
+# W/ogpckbg9iASNvc4WzlQ5nO7Wzx26gQLz2Kyh+2jBUjDjPgzUaJOvruYBv/TeTZ
+# YBsSvIvy9q9ws+bHCV28f69IXqWrBs2miYKOelp8vxmLTWg6RZeXz/nZV3Lp0QXX
+# PW8V+3s6dT2Mv/0fhBuM49sCJS+6+O8A8O6+chfOn6y5OHNpHNdxfwoJIe2kfe/u
+# WdjEj8T2+Qw8w++AdmEHBXzgr0RQpAshf0J6WWRJbQrHeLN1h80CermSvYGForL1
+# vaBSjLRfeqH9w+PivVDhkNNFrUoRF4LAXx5henuLgQNx/5BKmUFybjcHLyCXQbOC
+# f5ZTngQrj3EYwyZrHbHjexNltS8ILSNe0Fq1TVmqL7MDM7qiCnkYiZjutMPd21WO
+# 57z6cxPXB6pIYKlt9gyJmnWSv85CAtKaqzCUgwIFtVgKdHkkJ4hzZacjnxItAxk9
+# motyXV/7kjq/dGNAs04O0vQD/kULnyXGBOiqbGbRMMEYclC2sdMyPLNoCEgZ/Rtb
 # SIG # End signature block

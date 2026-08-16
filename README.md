@@ -92,10 +92,12 @@ Test multiple NDES servers by piping their FQDNs to the script:
 - **No NTLM challenge offered** — The endpoint did not present an NTLM challenge and did not disclose any information.
 - **Inconclusive** — The server advertised NTLM but did not return a type-2 payload on this attempt. This can happen intermittently, so repeat the test before drawing a conclusion.
 - **Invalid response** — The server returned an NTLM value that failed validation (it did not contain a well-formed NTLM type-2 message). No information could be extracted; repeat the test before drawing a conclusion.
+- **TLS certificate validation failed** — The request was not sent because the server's TLS certificate could not be validated (self-signed, name mismatch, or untrusted issuer). Disclosure cannot be assessed until the connection succeeds. Re-run with `-SkipCertificateCheck` to bypass certificate validation.
+- **Request failed** — The request did not complete for another reason (for example, the host was unreachable or the connection was refused). The status includes the underlying `curl` exit code and error text. Resolve the connectivity issue and repeat the test.
 
 ### How It Works
 
-The request is sent with `curl.exe` rather than `Invoke-WebRequest` so that the response headers, including the raw NTLM challenge, are captured verbatim. The script then decodes the base64 challenge, validates the `NTLMSSP` signature and message type, and walks the TargetInfo AV_PAIR block to extract the disclosed fields.
+The request is sent with `curl.exe` rather than `Invoke-WebRequest` so that the response headers, including the raw NTLM challenge, are captured verbatim. The script checks `curl`'s exit code first, so a request that never completes (such as a TLS certificate validation failure) is reported as inconclusive rather than mistaken for a server that did not disclose information. When the request succeeds, the script decodes the base64 challenge, validates the `NTLMSSP` signature and message type, and walks the TargetInfo AV_PAIR block to extract the disclosed fields.
 
 ## Additional Resources
 
