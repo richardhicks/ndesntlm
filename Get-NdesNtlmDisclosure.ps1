@@ -1,6 +1,6 @@
 <#PSScriptInfo
 
-.VERSION 1.0
+.VERSION 1.1
 
 .GUID c5c64ed4-9898-4369-a5b1-eabb478bcbac
 
@@ -41,9 +41,9 @@
     (/certsrv/mscep_admin), which is the resource that presents the NTLM challenge.
 
 .PARAMETER ComputerName
-    The fully qualified domain name (FQDN) of the NDES server to test. The script sends the
-    request over HTTPS to the /certsrv/mscep_admin path on this host. This parameter can be
-    supplied from the pipeline.
+    One or more fully qualified domain names (FQDNs) of the NDES servers to test. The script
+    sends the request over HTTPS to the /certsrv/mscep_admin path on each host. This parameter
+    accepts a comma-separated list and can be supplied from the pipeline.
 
 .PARAMETER SkipCertificateCheck
     Bypasses TLS certificate validation (curl -k). Use this when the NDES server presents a
@@ -77,6 +77,11 @@
     when the server presents a self-signed or untrusted certificate.
 
 .EXAMPLE
+    .\Get-NdesNtlmDisclosure.ps1 -ComputerName ndes1.corp.example.com, ndes2.corp.example.com, ndes3.corp.example.com
+
+    Tests multiple NDES servers by passing a comma-separated list of FQDNs.
+
+.EXAMPLE
     'ndes1.corp.example.com', 'ndes2.corp.example.com' | .\Get-NdesNtlmDisclosure.ps1
 
     Tests multiple NDES servers by piping their FQDNs to the script.
@@ -85,7 +90,7 @@
     https://www.richardhicks.com/
 
 .NOTES
-    Version:        1.0
+    Version:        1.1
     Creation Date:  August 15, 2026
     Last Updated:   August 15, 2026
     Author:         Richard Hicks
@@ -103,155 +108,159 @@ Param (
 
     [Parameter(Mandatory, ValueFromPipeline, ValueFromPipelineByPropertyName, HelpMessage = 'Enter the fully qualified domain name (FQDN) of the NDES server')]
     [ValidateNotNullOrEmpty()]
-    [string]$ComputerName,
+    [string[]]$ComputerName,
     [switch]$SkipCertificateCheck
 
 )
 
 Process {
 
-    # Build the target from the supplied FQDN. The request is always sent over HTTPS to the default NDES SCEP
-    # administration endpoint (/certsrv/mscep_admin), which is the resource that presents the NTLM challenge
-    $Target = [uri]"https://$ComputerName/certsrv/mscep_admin"
-    Write-Verbose "Target NDES administration endpoint: $($Target.AbsoluteUri)"
+    ForEach ($Computer in $ComputerName) {
 
-    # Seed a consistently shaped result object up front. Every code path fills in and emits this same
-    # object so that a stream of results (e.g. multiple servers piped in) renders as one uniform table.
-    # Disclosure fields default to $null and are populated only when the server actually leaks them.
-    $Result = [ordered]@{
+        # Build the target from the supplied FQDN. The request is always sent over HTTPS to the default NDES SCEP
+        # administration endpoint (/certsrv/mscep_admin), which is the resource that presents the NTLM challenge
+        $Target = [uri]"https://$Computer/certsrv/mscep_admin"
+        Write-Verbose "Target NDES administration endpoint: $($Target.AbsoluteUri)"
 
-        Target                  = $Target.AbsoluteUri
-        Status                  = $null
-        'NetBIOS Computer Name' = $null
-        'NetBIOS Domain Name'   = $null
-        'DNS Computer Name'     = $null
-        'DNS Domain Name'       = $null
-        'DNS Forest Name'       = $null
-        'OS Version'            = $null
+        # Seed a consistently shaped result object up front. Every code path fills in and emits this same
+        # object so that a stream of results (e.g. multiple servers piped in) renders as one uniform table.
+        # Disclosure fields default to $null and are populated only when the server actually leaks them.
+        $Result = [ordered]@{
 
-    }
-
-    # Build the curl arguments:
-    #   -sI  : silent, headers only (HEAD-style response)
-    #   -H   : send an unauthenticated NTLM type-1 (negotiate) message to trigger the server's type-2 challenge
-    # The base64 blob is a standard, static NTLM type-1 negotiate message
-    $CurlArgs = @('-sI', '-H', 'Authorization: NTLM TlRMTVNTUAABAAAAB4IIAAAAAAAAAAAAAAAAAAAAAAA=', $Target.AbsoluteUri)
-
-    If ($SkipCertificateCheck) {
-
-        # Prepend -k so curl ignores TLS certificate validation errors (e.g. self-signed or untrusted certificates)
-        Write-Verbose 'SkipCertificateCheck specified. TLS certificate validation will be bypassed (-k).'
-        $CurlArgs = @('-k') + $CurlArgs
-
-    }
-
-    # Send the request. curl.exe is used rather than Invoke-WebRequest because the response headers,
-    # including the raw NTLM challenge, need to be captured verbatim
-    Write-Verbose "Sending unauthenticated NTLM type-1 request to $($Target.AbsoluteUri)."
-    $Response = & curl.exe @CurlArgs
-
-    # Look for a WWW-Authenticate header that contains an NTLM type-2 payload (the base64 challenge)
-    $Match = $Response | Select-String -Pattern '^WWW-Authenticate:\s*NTLM\s+(\S+)\s*$'
-
-    If (-not $Match) {
-
-        If ($Response | Select-String -Pattern '^WWW-Authenticate:\s*NTLM\s*$') {
-
-            # The server advertised NTLM but did not return a type-2 payload on this attempt. This can happen
-            # intermittently, so the result is inconclusive rather than a clean "not vulnerable"
-            Write-Warning "$($Target.AbsoluteUri) offered an NTLM challenge but returned no type-2 payload. Repeat the test; this result is not conclusive."
-            $Result.Status = 'NTLM challenge offered but no type-2 payload returned. Result inconclusive; repeat the test.'
+            Target                  = $Target.AbsoluteUri
+            Status                  = $null
+            'NetBIOS Computer Name' = $null
+            'NetBIOS Domain Name'   = $null
+            'DNS Computer Name'     = $null
+            'DNS Domain Name'       = $null
+            'DNS Forest Name'       = $null
+            'OS Version'            = $null
 
         }
 
-        Else {
+        # Build the curl arguments:
+        #   -sI  : silent, headers only (HEAD-style response)
+        #   -H   : send an unauthenticated NTLM type-1 (negotiate) message to trigger the server's type-2 challenge
+        # The base64 blob is a standard, static NTLM type-1 negotiate message
+        $CurlArgs = @('-sI', '-H', 'Authorization: NTLM TlRMTVNTUAABAAAAB4IIAAAAAAAAAAAAAAAAAAAAAAA=', $Target.AbsoluteUri)
 
-            # No NTLM challenge at all, so there is nothing to disclose from this endpoint
-            Write-Verbose "$($Target.AbsoluteUri) did not offer an NTLM challenge."
-            $Result.Status = 'No NTLM challenge offered. Information not disclosed.'
+        If ($SkipCertificateCheck) {
+
+            # Prepend -k so curl ignores TLS certificate validation errors (e.g. self-signed or untrusted certificates)
+            Write-Verbose 'SkipCertificateCheck specified. TLS certificate validation will be bypassed (-k).'
+            $CurlArgs = @('-k') + $CurlArgs
 
         }
 
+        # Send the request. curl.exe is used rather than Invoke-WebRequest because the response headers,
+        # including the raw NTLM challenge, need to be captured verbatim
+        Write-Verbose "Sending unauthenticated NTLM type-1 request to $($Target.AbsoluteUri)."
+        $Response = & curl.exe @CurlArgs
+
+        # Look for a WWW-Authenticate header that contains an NTLM type-2 payload (the base64 challenge)
+        $Match = $Response | Select-String -Pattern '^WWW-Authenticate:\s*NTLM\s+(\S+)\s*$'
+
+        If (-not $Match) {
+
+            If ($Response | Select-String -Pattern '^WWW-Authenticate:\s*NTLM\s*$') {
+
+                # The server advertised NTLM but did not return a type-2 payload on this attempt. This can happen
+                # intermittently, so the result is inconclusive rather than a clean "not vulnerable"
+                Write-Warning "$($Target.AbsoluteUri) offered an NTLM challenge but returned no type-2 payload. Repeat the test; this result is not conclusive."
+                $Result.Status = 'NTLM challenge offered but no type-2 payload returned. Result inconclusive; repeat the test.'
+
+            }
+
+            Else {
+
+                # No NTLM challenge at all, so there is nothing to disclose from this endpoint
+                Write-Verbose "$($Target.AbsoluteUri) did not offer an NTLM challenge."
+                $Result.Status = 'No NTLM challenge offered. Information not disclosed.'
+
+            }
+
+            [PSCustomObject]$Result
+            Continue
+
+        }
+
+        # Decode the base64 challenge into the raw NTLM type-2 message bytes
+        Write-Verbose 'NTLM type-2 challenge received. Decoding payload.'
+        $Bytes = [Convert]::FromBase64String($Match.Matches.Groups[1].Value)
+
+        # Validate the message: bytes 0-7 must be the 'NTLMSSP' signature and the message type at offset 8 must be 2 (challenge)
+        If ([Text.Encoding]::ASCII.GetString($Bytes, 0, 7) -ne 'NTLMSSP' -or [BitConverter]::ToUInt32($Bytes, 8) -ne 2) {
+
+            Write-Warning "$($Target.AbsoluteUri) response did not contain a valid NTLM type-2 message."
+            $Result.Status = 'Response did not contain a valid NTLM type-2 message.'
+            [PSCustomObject]$Result
+            Continue
+
+        }
+
+        # TargetInfo field: length at offset 40, buffer offset at 44
+        $InfoLength = [BitConverter]::ToUInt16($Bytes, 40)
+        $InfoOffset = [BitConverter]::ToUInt32($Bytes, 44)
+        Write-Verbose "TargetInfo block: length $InfoLength byte(s) at offset $InfoOffset."
+
+        # Map of NTLM AV_PAIR types to human-readable labels for the fields worth surfacing
+        $Labels = @{
+
+            1 = 'NetBIOS Computer Name'
+            2 = 'NetBIOS Domain Name'
+            3 = 'DNS Computer Name'
+            4 = 'DNS Domain Name'
+            5 = 'DNS Forest Name'
+
+        }
+
+        # A valid type-2 challenge was returned, so the server is disclosing information
+        $Result.Status = 'NTLM challenge returned. Information disclosed.'
+        $Position = $InfoOffset
+
+        # Walk the TargetInfo block, which is a sequence of AV_PAIR entries: 2-byte type, 2-byte length, then the value
+        While ($Position -lt ($InfoOffset + $InfoLength)) {
+
+            $Type = [BitConverter]::ToUInt16($Bytes, $Position)
+            $Length = [BitConverter]::ToUInt16($Bytes, $Position + 2)
+
+            If ($Type -eq 0) {
+
+                # Type 0 (MsvAvEOL) marks the end of the AV_PAIR list
+                Break
+
+            }
+
+            If ($Labels.ContainsKey([int]$Type)) {
+
+                # Recognized field: decode the value (Unicode/UTF-16LE) and store it under its friendly label
+                $Value = [Text.Encoding]::Unicode.GetString($Bytes, $Position + 4, $Length)
+                Write-Verbose "Disclosed $($Labels[[int]$Type]): $Value"
+                $Result[$Labels[[int]$Type]] = $Value
+
+            }
+
+            # Advance past this AV_PAIR (4-byte header + value) to the next entry
+            $Position += 4 + $Length
+
+        }
+
+        # The OS version structure lives at offset 48: major (byte 48), minor (byte 49), build (uint16 at 50)
+        $Result['OS Version'] = '{0}.{1}.{2}' -f $Bytes[48], $Bytes[49], [BitConverter]::ToUInt16($Bytes, 50)
+        Write-Verbose "Disclosed OS Version: $($Result['OS Version'])"
+
+        # Emit the collected disclosure fields as a single object
         [PSCustomObject]$Result
-        Return
 
     }
-
-    # Decode the base64 challenge into the raw NTLM type-2 message bytes
-    Write-Verbose 'NTLM type-2 challenge received. Decoding payload.'
-    $Bytes = [Convert]::FromBase64String($Match.Matches.Groups[1].Value)
-
-    # Validate the message: bytes 0-7 must be the 'NTLMSSP' signature and the message type at offset 8 must be 2 (challenge)
-    If ([Text.Encoding]::ASCII.GetString($Bytes, 0, 7) -ne 'NTLMSSP' -or [BitConverter]::ToUInt32($Bytes, 8) -ne 2) {
-
-        Write-Warning "$($Target.AbsoluteUri) response did not contain a valid NTLM type-2 message."
-        $Result.Status = 'Response did not contain a valid NTLM type-2 message.'
-        [PSCustomObject]$Result
-        Return
-
-    }
-
-    # TargetInfo field: length at offset 40, buffer offset at 44
-    $InfoLength = [BitConverter]::ToUInt16($Bytes, 40)
-    $InfoOffset = [BitConverter]::ToUInt32($Bytes, 44)
-    Write-Verbose "TargetInfo block: length $InfoLength byte(s) at offset $InfoOffset."
-
-    # Map of NTLM AV_PAIR types to human-readable labels for the fields worth surfacing
-    $Labels = @{
-
-        1 = 'NetBIOS Computer Name'
-        2 = 'NetBIOS Domain Name'
-        3 = 'DNS Computer Name'
-        4 = 'DNS Domain Name'
-        5 = 'DNS Forest Name'
-
-    }
-
-    # A valid type-2 challenge was returned, so the server is disclosing information
-    $Result.Status = 'NTLM challenge returned. Information disclosed.'
-    $Position = $InfoOffset
-
-    # Walk the TargetInfo block, which is a sequence of AV_PAIR entries: 2-byte type, 2-byte length, then the value
-    While ($Position -lt ($InfoOffset + $InfoLength)) {
-
-        $Type = [BitConverter]::ToUInt16($Bytes, $Position)
-        $Length = [BitConverter]::ToUInt16($Bytes, $Position + 2)
-
-        If ($Type -eq 0) {
-
-            # Type 0 (MsvAvEOL) marks the end of the AV_PAIR list
-            Break
-
-        }
-
-        If ($Labels.ContainsKey([int]$Type)) {
-
-            # Recognized field: decode the value (Unicode/UTF-16LE) and store it under its friendly label
-            $Value = [Text.Encoding]::Unicode.GetString($Bytes, $Position + 4, $Length)
-            Write-Verbose "Disclosed $($Labels[[int]$Type]): $Value"
-            $Result[$Labels[[int]$Type]] = $Value
-
-        }
-
-        # Advance past this AV_PAIR (4-byte header + value) to the next entry
-        $Position += 4 + $Length
-
-    }
-
-    # The OS version structure lives at offset 48: major (byte 48), minor (byte 49), build (uint16 at 50)
-    $Result['OS Version'] = '{0}.{1}.{2}' -f $Bytes[48], $Bytes[49], [BitConverter]::ToUInt16($Bytes, 50)
-    Write-Verbose "Disclosed OS Version: $($Result['OS Version'])"
-
-    # Emit the collected disclosure fields as a single object
-    [PSCustomObject]$Result
 
 }
 
 # SIG # Begin signature block
-# MIIk7QYJKoZIhvcNAQcCoIIk3jCCJNoCAQExDzANBglghkgBZQMEAgEFADB5Bgor
+# MIIk6wYJKoZIhvcNAQcCoIIk3DCCJNgCAQExDzANBglghkgBZQMEAgEFADB5Bgor
 # BgEEAYI3AgEEoGswaTA0BgorBgEEAYI3AgEeMCYCAwEAAAQQH8w7YFlLCE63JNLG
-# KX7zUQIBAAIBAAIBAAIBAAIBADAxMA0GCWCGSAFlAwQCAQUABCC9mCsfpe91mchJ
-# fhWQTupagOOIKm+FTeF5VaagMJptXaCCH6YwggWNMIIEdaADAgECAhAOmxiO+dAt
+# KX7zUQIBAAIBAAIBAAIBAAIBADAxMA0GCWCGSAFlAwQCAQUABCAN0tydnxvNCF5l
+# roGuKdQpbk32gH/uGXfJr3y3d7dLBaCCH6YwggWNMIIEdaADAgECAhAOmxiO+dAt
 # 5+/bUOIIQBhaMA0GCSqGSIb3DQEBDAUAMGUxCzAJBgNVBAYTAlVTMRUwEwYDVQQK
 # EwxEaWdpQ2VydCBJbmMxGTAXBgNVBAsTEHd3dy5kaWdpY2VydC5jb20xJDAiBgNV
 # BAMTG0RpZ2lDZXJ0IEFzc3VyZWQgSUQgUm9vdCBDQTAeFw0yMjA4MDEwMDAwMDBa
@@ -420,30 +429,29 @@ Process {
 # cJIFcbojBcxlRcGG0LIhp6GvReQGgMgYxQbV1S3CrWqZzBt1R9xJgKf47CdxVRd/
 # ndUlQ05oxYy2zRWVFjF7mcr4C34Mj3ocCVccAvlKV9jEnstrniLvUxxVZE/rptb7
 # IRE2lskKPIJgbaP5t2nGj/ULLi49xTcBZU8atufk+EMF/cWuiC7POGT75qaL6vdC
-# vHlshtjdNXOCIUjsarfNZzGCBJ0wggSZAgEBMH0waTELMAkGA1UEBhMCVVMxFzAV
+# vHlshtjdNXOCIUjsarfNZzGCBJswggSXAgEBMH0waTELMAkGA1UEBhMCVVMxFzAV
 # BgNVBAoTDkRpZ2lDZXJ0LCBJbmMuMUEwPwYDVQQDEzhEaWdpQ2VydCBUcnVzdGVk
 # IEc0IENvZGUgU2lnbmluZyBSU0E0MDk2IFNIQTM4NCAyMDIxIENBMQIQDsYrSCrm
 # UJuvTRscProh/zANBglghkgBZQMEAgEFAKCBhDAYBgorBgEEAYI3AgEMMQowCKAC
 # gAChAoAAMBkGCSqGSIb3DQEJAzEMBgorBgEEAYI3AgEEMBwGCisGAQQBgjcCAQsx
-# DjAMBgorBgEEAYI3AgEVMC8GCSqGSIb3DQEJBDEiBCCZo6+AYN/BYxRi6YM1ShoL
-# 14GEf4A+EMqJXiEJde2yczALBgcqhkjOPQIBBQAESDBGAiEApyR3qwEyLVlyxNYr
-# Gyu1DPojKHWjFZCsrQ3KtztrIVcCIQDPJ6T+L4cSjuKPMlKK+vpdGYmGYTYNhKBE
-# S2PFhBzwzaGCAyYwggMiBgkqhkiG9w0BCQYxggMTMIIDDwIBATB9MGkxCzAJBgNV
-# BAYTAlVTMRcwFQYDVQQKEw5EaWdpQ2VydCwgSW5jLjFBMD8GA1UEAxM4RGlnaUNl
-# cnQgVHJ1c3RlZCBHNCBUaW1lU3RhbXBpbmcgUlNBNDA5NiBTSEEyNTYgMjAyNSBD
-# QTECEAqA7xhLjfEFgtHEdqeVdGgwDQYJYIZIAWUDBAIBBQCgaTAYBgkqhkiG9w0B
-# CQMxCwYJKoZIhvcNAQcBMBwGCSqGSIb3DQEJBTEPFw0yNjA4MTUyMjIxMDJaMC8G
-# CSqGSIb3DQEJBDEiBCBtT98HnE31eulBZX9ZUfovABvgxqDra5yGl3hRkGwGEjAN
-# BgkqhkiG9w0BAQEFAASCAgCVMekKIcLsAHHY6Lul5ebtFFtyvBYC4uVEV1AgMPmR
-# QDxr+9M33CaujAk2UN+9tglufIk+FpVEV5AGSxnCDQuwJN8ESgs1nNig3sJeZjdI
-# A85WU3/8HKuQe+Jy/nlo4jtJZ7Hj8fHNgRI09weaS3TE+71OEIA+MhdJZkixm79u
-# VcXzGnt/8EwIULmqrCxbs8H1rHQkZDLyMx1LUY4Bm8R4RrO0FtegIn/2SszS/nd7
-# ZCSl0Wg0mx+0O4z8i8+ygE8hzK1BvBd8zeVYxTrHPIKPr1fQIlVtxTiQzYaXMxF2
-# TVaaxW+WcqW27diEckgTdy6S+AI9CqNJNyorNX7Pl7IAtfhvB+EZKZjTNEfqN/Vo
-# Zf09DzDdyeykS25Z+sLP7CS5sVYz5vgQaetNth8q/Ro7a5B5ajbN8UWNzpvCJkiR
-# K/xFnlBB/VWH5DjrxuRjSR5lOwM/HU+zVBn1ADofG2wcp0hULuMR+fNKQBI4bSg+
-# FYxOGVPAF3HN++JCyAqJnPZRbWeE7Tf1biANO7xhH3AJ/NwtY5tYIYLfSjd+qdAE
-# lOOGUiMt4friF8WkQ8UHMB1+EBIF6NmlWyxXBRTWFzCRU5ReBnpgeSYHQii1N0nf
-# aq07Fp32uR0WT0R/bMaTgZNksH2JGXdMLwfc3GbO/vUvwqRNiatH8IGAzQfVX+F6
-# nA==
+# DjAMBgorBgEEAYI3AgEVMC8GCSqGSIb3DQEJBDEiBCCUTbTWy5wP+ha1ie/V1q8R
+# DzFOV9eqQWNEn+sRiIc8XDALBgcqhkjOPQIBBQAERjBEAiBwEa/gKkDO6C2F3yP8
+# JNLH5WRQGDzbsgektlj2uLe3+gIgc3znEWKynHuu4ccRAbvmmJWzgobuLsPrT8V3
+# PFbfqjihggMmMIIDIgYJKoZIhvcNAQkGMYIDEzCCAw8CAQEwfTBpMQswCQYDVQQG
+# EwJVUzEXMBUGA1UEChMORGlnaUNlcnQsIEluYy4xQTA/BgNVBAMTOERpZ2lDZXJ0
+# IFRydXN0ZWQgRzQgVGltZVN0YW1waW5nIFJTQTQwOTYgU0hBMjU2IDIwMjUgQ0Ex
+# AhAKgO8YS43xBYLRxHanlXRoMA0GCWCGSAFlAwQCAQUAoGkwGAYJKoZIhvcNAQkD
+# MQsGCSqGSIb3DQEHATAcBgkqhkiG9w0BCQUxDxcNMjYwODE2MDQzMDE3WjAvBgkq
+# hkiG9w0BCQQxIgQg/Ph90Mj3JQc8kB30MyAsCY9mFaOI2Fjta8JKvwmLquAwDQYJ
+# KoZIhvcNAQEBBQAEggIAWIc3ItKxBJPoZXKAwnK12VHyBz0gbekgszGV2TCfmrP9
+# f0G+LctBt8qYP6SqExUUJP6QiksfGOBhWhi45q/MozqrmyMfMV5OPdsgJ1gPHxkp
+# Plm6R7lOjA+g91Lb25L7GuND9phZ0CGBJk3PbyB7wk99nwkhWJF0LIBSwD3sJwFP
+# obp5U8u3LkGir6p4f6k45zngn5JkL+sjzVJ4mdUJeVUZnDJjD/3F+0BuxWyceGk1
+# 9Q1MBIAQtE0Y+PRuTMn9+fdWK4YC8dbos620yossC0Y/+l+aQzM9edAmp72CGGYg
+# p56Eh/kF7l37dlhsKfW5pZ/6O1JR9FY5WQFaGpchh87EhBiZLD93GPokEH5wooEA
+# K0uey4g53hqWaGFdtnTnfg5R4B69vDugu1aQrz+E+cm9gIqISrPXPi5MHB6DGilf
+# FP37kye9/xKdjFJFtO7SC0rhNfqtzF7OxVvYr9TBJ/cjPSOFJoOKNwnBIjQSya0c
+# Z2fvTtGMwyYN7Fo5ogqm1+dEOQ/7R3brQ0U5eEFrOUQQoT+12jbE+SbIyzRGoOVq
+# YATtA5YJLAaWJ1saJJZbwo3HsBXtsZvHM4yaLVg1kA3svO8Kxt1PZqNufqu+0jnN
+# LbqAmMwp8bZ05+sPEpKtrpF7WdzIXrIOzCkMbgXkei6hhw1akuBR3+umlaUDR+4=
 # SIG # End signature block

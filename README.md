@@ -1,5 +1,7 @@
 # Get-NdesNtlmDisclosure.ps1
 
+[![PowerShell Gallery](https://img.shields.io/badge/PowerShell%20Gallery-Get--NdesNtlmDisclosure-blue)](https://www.powershellgallery.com/packages/Get-NdesNtlmDisclosure) [![License](https://img.shields.io/badge/License-MIT-green)](https://github.com/richardhicks/ndesntlm/blob/main/LICENSE) [![Version](https://img.shields.io/powershellgallery/v/Get-NdesNtlmDisclosure?label=Version&color=brightgreen)](https://www.powershellgallery.com/packages/Get-NdesNtlmDisclosure)
+
 ## Overview
 
 > **Important:** This script is a diagnostic and security assessment tool. It sends a single, unauthenticated request to a Network Device Enrollment Service (NDES) server to determine whether the server discloses sensitive host and domain information. It only reads what the server willingly returns and makes no changes to the target.
@@ -38,7 +40,7 @@ Alternatively, download the script directly from the [GitHub repository](https:/
 
 | Parameter | Required | Description |
 | --- | --- | --- |
-| `ComputerName` | Yes | The fully qualified domain name (FQDN) of the NDES server to test. The request is sent over HTTPS to the `/certsrv/mscep_admin` path on this host. This parameter accepts input from the pipeline. |
+| `ComputerName` | Yes | One or more fully qualified domain names (FQDNs) of the NDES servers to test. The request is sent over HTTPS to the `/certsrv/mscep_admin` path on each host. Accepts a comma-separated list and input from the pipeline. |
 | `SkipCertificateCheck` | No | Bypasses TLS certificate validation (`curl -k`). Use this when the NDES server presents a self-signed or otherwise untrusted certificate. |
 
 ## Output
@@ -70,6 +72,12 @@ Test the NDES server while ignoring TLS certificate validation errors, which is 
 .\Get-NdesNtlmDisclosure.ps1 -ComputerName ndes.corp.example.com -SkipCertificateCheck
 ```
 
+Test multiple NDES servers by passing a comma-separated list of FQDNs:
+
+```powershell
+.\Get-NdesNtlmDisclosure.ps1 -ComputerName ndes1.corp.example.com, ndes2.corp.example.com, ndes3.corp.example.com
+```
+
 Test multiple NDES servers by piping their FQDNs to the script:
 
 ```powershell
@@ -83,6 +91,7 @@ Test multiple NDES servers by piping their FQDNs to the script:
 - **Information disclosed** — The server returned a valid NTLM type-2 challenge and leaked host and domain details. Remediate by disabling NTLM on the NDES SCEP administration endpoint.
 - **No NTLM challenge offered** — The endpoint did not present an NTLM challenge and did not disclose any information.
 - **Inconclusive** — The server advertised NTLM but did not return a type-2 payload on this attempt. This can happen intermittently, so repeat the test before drawing a conclusion.
+- **Invalid response** — The server returned an NTLM value that failed validation (it did not contain a well-formed NTLM type-2 message). No information could be extracted; repeat the test before drawing a conclusion.
 
 ### How It Works
 
